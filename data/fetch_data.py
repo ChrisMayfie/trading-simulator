@@ -4,7 +4,7 @@ import pandas as pd     #handling data structures and analysis
 def get_data(ticker: str, start_date="2022-01-01", end_date="2023-01-01") -> pd.DataFrame:
 
     """
-    This fetches historicla market data for specified stock ticker.
+    This fetches historical market data for specified stock ticker.
 
     Parameters:
         ticker (str): Stock symbol (AAPL - 'Apple' , GOOG - 'Google')
