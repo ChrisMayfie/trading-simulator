@@ -38,10 +38,10 @@ if run_btn:
         else:
             results = []
             if "Momentum" in strategies:
-                trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy, label="Momentum")
+                trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy)
                 results.append(("Momentum", trades_mom, stats_mom))
             if "Mean Reversion" in strategies:
-                trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy, label="Mean Reversion")
+                trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy)
                 results.append(("Mean Reversion", trades_rev, stats_rev))
 
             # Prepare three columns for up to two plots + table
