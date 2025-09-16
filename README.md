@@ -10,10 +10,9 @@ This project is a Python-based backtesting simulator that runs and compares two 
 - Clear matplotlib visualizations with annotated trades
 - Side-by-side trade table comparison
 - Modular structure for strategy experimentation
-- New: Browser support via Streamlit app
+### - New: Browser support via Streamlit app
   - Run directly in the browser — no setup required
   - Downloadable CSVs for trade history
-  -  
 
 ## Strategies
 
