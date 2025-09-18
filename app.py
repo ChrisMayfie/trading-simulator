@@ -1,33 +1,56 @@
 import streamlit as st
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 from datetime import date, timedelta
 
-# Import local modules
+# local modules
 from data.fetch_data import get_data
+from simulation.simulator import run_simulation
 from strategies.momentum import momentum_strategy
 from strategies.mean_reversion import mean_reversion_strategy
-from simulation.simulator import run_simulation
 from utils.plot import plot_trades_matplotlib, show_trade_table
 
-st.set_page_config(page_title="Trading Simulator — Web App", layout="wide")
-
+st.set_page_config(page_title="Trading Simulator", layout="wide")
 st.title("Trading Simulator — Momentum vs. Mean Reversion")
 
-# Sidebar controls
+# keep a selected ticker in state so quick buttons can update the input
+if "selected_ticker" not in st.session_state:
+    st.session_state.selected_ticker = "AAPL"  # default I keep using
+
 with st.sidebar:
     st.header("Controls")
-    ticker = st.text_input("Ticker", value="AAPL").upper().strip()
-    col1, col2 = st.columns(2)
-    with col1:
-        end = st.date_input("End date", value=date.today())
-    with col2:
-        start = st.date_input("Start date", value=end - timedelta(days=365))
-    strategies = st.multiselect("Strategies", ["Momentum", "Mean Reversion"], default=["Momentum", "Mean Reversion"])
-    show_ma = st.checkbox("Show moving average (10d)", value=True)
+
+    # --- Quick tickers (little convenience) ---
+    st.caption("Quick tickers")
+    col_qt1, col_qt2, col_qt3 = st.columns(3)
+
+    # these just set my selected ticker and refresh the app
+    if col_qt1.button("AAPL"):
+        st.session_state.selected_ticker = "AAPL"
+        st.rerun()
+    if col_qt2.button("TSLA"):
+        st.session_state.selected_ticker = "TSLA"
+        st.rerun()
+    if col_qt3.button("SPY"):
+        st.session_state.selected_ticker = "SPY"
+        st.rerun()
+
+    # main input still wins; it picks up whatever the quick button set
+    ticker = st.text_input(
+        "Ticker",
+        value=st.session_state.selected_ticker
+    ).upper().strip()
+    if ticker:
+        st.session_state.selected_ticker = ticker  # keep state in sync
+
+    # plain date inputs
+    end = st.date_input("End date", value=date.today())
+    start = st.date_input("Start date", value=end - timedelta(days=365))
+
+    show_ma = st.checkbox("Show moving average line", value=True)
     run_btn = st.button("Run Backtest", type="primary")
 
-# Main area
+# run on button click only
 if run_btn:
     try:
         with st.spinner("Fetching data..."):
@@ -36,39 +59,69 @@ if run_btn:
         if df is None or df.empty:
             st.warning("No data returned. Try a different date range or ticker.")
         else:
-            results = []
-            if "Momentum" in strategies:
-                trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy)
-                results.append(("Momentum", trades_mom, stats_mom))
-            if "Mean Reversion" in strategies:
-                trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy)
-                results.append(("Mean Reversion", trades_rev, stats_rev))
+            # run both strategies with the basic simulator
+            trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy)
+            trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy)
 
-            # Prepare three columns for up to two plots + table
+            # 3 columns: momentum chart | reversion chart | comparison table
             left, middle, right = st.columns(3)
 
-            # Plot each selected strategy (up to two)
-            for idx, (name, trades, stats) in enumerate(results[:2]):
+            with left:
                 fig, ax = plt.subplots(figsize=(7, 4))
-                title = f"{ticker} — {name}\nProfit: ${stats['profit']:.2f} | Trades: {stats['trades']}"
-                plot_trades_matplotlib(df.copy(), trades, title=title, show_ma=show_ma, ax=ax, cumulative_stats=stats)
-                if idx == 0:
-                    with left: st.pyplot(fig, clear_figure=True)
-                elif idx == 1:
-                    with middle: st.pyplot(fig, clear_figure=True)
+                title = f"{ticker} — Momentum\nProfit: ${stats_mom['profit']:.2f} | Trades: {stats_mom['trades']}"
+                plot_trades_matplotlib(
+                    df.copy(),
+                    trades_mom,
+                    title=title,
+                    show_ma=show_ma,
+                    ax=ax,
+                    cumulative_stats=stats_mom
+                )
+                st.pyplot(fig, clear_figure=True)
 
-            # Comparison table if both strategies are present
-            if len(results) >= 2:
-                (_, t1, _), (_, t2, _) = results[0], results[1]
-                fig_table, ax_table = plt.subplots(figsize=(7, 4))
-                show_trade_table(ax_table, t1, t2, title=f"{ticker} Trades")
-                with right:
-                    st.pyplot(fig_table, clear_figure=True)
+            with middle:
+                fig2, ax2 = plt.subplots(figsize=(7, 4))
+                title2 = f"{ticker} — Mean Reversion\nProfit: ${stats_rev['profit']:.2f} | Trades: {stats_rev['trades']}"
+                plot_trades_matplotlib(
+                    df.copy(),
+                    trades_rev,
+                    title=title2,
+                    show_ma=show_ma,
+                    ax=ax2,
+                    cumulative_stats=stats_rev
+                )
+                st.pyplot(fig2, clear_figure=True)
 
-            # Downloads
+            with right:
+                fig_table, ax_table = plt.subplots(figsize=(7, 5))
+                show_trade_table(ax_table, trades_mom, trades_rev, title=f"{ticker} Trades")
+                st.pyplot(fig_table, clear_figure=True)
+
+            # ---- Minimal metrics (under the charts)
+            st.markdown("---")
+            st.subheader("Metrics (quick)")
+
+            def basic_metrics(stats: dict):
+                # initial capital hard-coded here; fine for now
+                ret_pct = (stats.get("profit", 0.0) / 10_000.0) * 100.0
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Profit ($)", f"{stats.get('profit', 0.0):,.2f}")
+                c2.metric("Trades", f"{stats.get('trades', 0)}")
+                c3.metric("Return (%)", f"{ret_pct:.2f}")
+
+            # two simple blocks, one per strategy
+            colA, colB = st.columns(2)
+            with colA:
+                st.markdown("**Momentum**")
+                basic_metrics(stats_mom)
+            with colB:
+                st.markdown("**Mean Reversion**")
+                basic_metrics(stats_rev)
+
+            # downloads stay as-is (handy and small)
             st.subheader("Downloads")
-            for name, trades, _ in results:
-                csv = trades.to_csv(index=False).encode("utf-8")
+            for name, trades in [("Momentum", trades_mom), ("Mean Reversion", trades_rev)]:
+                csv = trades.reset_index().to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=f"Download {ticker} {name} trades CSV",
                     data=csv,
@@ -76,15 +129,8 @@ if run_btn:
                     mime="text/csv",
                 )
 
-            # Metrics
-            st.subheader("Summary")
-            for name, _, stats in results:
-                m1, m2, m3 = st.columns(3)
-                with m1: st.metric(f"{name} — Profit ($)", f"{stats.get('profit', 0):.2f}")
-                with m2: st.metric(f"{name} — Trades", f"{stats.get('trades', 0)}")
-                with m3: st.metric(f"{name} — Return (%)", f"{stats.get('return_pct', 0):.2f}")
     except Exception as e:
         st.error(f"Error: {e}")
         st.exception(e)
 
-st.caption("Tip: Use the sidebar to adjust ticker and dates. Wide layout is enabled for best viewing.")
+st.caption("Quick tickers set the input for convenience. Run the backtest to see charts, a trade comparison, and quick metrics.")
