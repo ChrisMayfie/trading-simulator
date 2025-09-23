@@ -2,6 +2,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import date, timedelta
+from io import BytesIO
 
 # local modules
 from data.fetch_data import get_data
@@ -12,6 +13,13 @@ from utils.plot import plot_trades_matplotlib, show_trade_table
 
 st.set_page_config(page_title="Trading Simulator", layout="wide")
 st.title("Trading Simulator — Momentum vs. Mean Reversion")
+
+# --- helper: save a matplotlib figure to PNG bytes (for downloads)
+def fig_to_png_bytes(fig) -> bytes:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=200)
+    buf.seek(0)
+    return buf.read()
 
 # --- minimal state ---
 if "selected_ticker" not in st.session_state:
@@ -37,24 +45,25 @@ with st.sidebar:
         st.session_state.selected_ticker = "SPY"
         st.rerun()
 
-    # text input stays the source of truth
     ticker = st.text_input("Ticker", value=st.session_state.selected_ticker).upper().strip()
     if ticker:
         st.session_state.selected_ticker = ticker
 
-    # idea: buttons tweak start_date in state, then rerun; inputs read state
+    # =========== Quick ranges (Goal 4) ===========
+    # two rows so the buttons don't squish (wider labels)
     st.caption("Quick ranges")
-    q1, q2, q3, q4 = st.columns(4)
-    if q1.button("3M"):
+    qrow1c1, qrow1c2 = st.columns(2)
+    if qrow1c1.button("3M"):
         st.session_state.start_date = date.today() - timedelta(days=90)
         st.rerun()
-    if q2.button("YTD"):
+    if qrow1c2.button("YTD"):
         st.session_state.start_date = date(date.today().year, 1, 1)
         st.rerun()
-    if q3.button("1Y"):
+    qrow2c1, qrow2c2 = st.columns(2)
+    if qrow2c1.button("1Y"):
         st.session_state.start_date = date.today() - timedelta(days=365)
         st.rerun()
-    if q4.button("5Y"):
+    if qrow2c2.button("5Y"):
         st.session_state.start_date = date.today() - timedelta(days=365 * 5)
         st.rerun()
 
@@ -79,7 +88,7 @@ start = st.session_state.start_date
 end = st.session_state.end_date
 ticker = st.session_state.selected_ticker
 
-# run on button click only
+# run on button click only (keeping this phase simple)
 if run_btn:
     try:
         with st.spinner("Fetching data..."):
@@ -114,6 +123,15 @@ if run_btn:
                 )
                 st.pyplot(fig, clear_figure=True)
 
+                # PNG download for Momentum chart
+                png_bytes_mom = fig_to_png_bytes(fig)
+                st.download_button(
+                    label="Download Momentum chart (PNG)",
+                    data=png_bytes_mom,
+                    file_name=f"{ticker}_momentum_{start}_{end}.png",
+                    mime="image/png",
+                )
+
             with middle:
                 fig2, ax2 = plt.subplots(figsize=(7, 4))
                 title2 = f"{ticker} — Mean Reversion\nProfit: ${stats_rev['profit']:.2f} | Trades: {stats_rev['trades']}"
@@ -122,6 +140,15 @@ if run_btn:
                     title=title2, show_ma=show_ma, ax=ax2, cumulative_stats=stats_rev
                 )
                 st.pyplot(fig2, clear_figure=True)
+
+                # PNG download for Mean Reversion chart
+                png_bytes_rev = fig_to_png_bytes(fig2)
+                st.download_button(
+                    label="Download Mean Reversion chart (PNG)",
+                    data=png_bytes_rev,
+                    file_name=f"{ticker}_mean_reversion_{start}_{end}.png",
+                    mime="image/png",
+                )
 
             with right:
                 fig_table, ax_table = plt.subplots(figsize=(7, 5))
@@ -155,7 +182,7 @@ if run_btn:
             beats = "Yes" if (stats_mom["profit"] > bh_profit) or (stats_rev["profit"] > bh_profit) else "No"
             c3.metric("Beats Buy & Hold?", beats)
 
-            # downloads (kept small)
+            # downloads (trade logs)
             st.subheader("Downloads")
             for name, trades in [("Momentum", trades_mom), ("Mean Reversion", trades_rev)]:
                 csv = trades.reset_index().to_csv(index=False).encode("utf-8")
@@ -210,4 +237,4 @@ if run_batch:
     else:
         st.info("No tickers to run. Add some symbols like: `AAPL, MSFT, GOOG`")
 
-st.caption("Quick tickers, quick ranges, simple metrics, and a tiny batch summary. Keeping the core flow minimal.")
+st.caption("Quick tickers, quick ranges, simple metrics, PNG chart downloads, and a tiny batch summary.")

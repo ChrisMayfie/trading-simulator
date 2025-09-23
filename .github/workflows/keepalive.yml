@@ -1,0 +1,14 @@
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes
+  workflow_dispatch: # allow manual runs
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl the Streamlit app
+        run: |
+          curl -sS -m 15 https://trading-simulator-3gbtpvahktdgkgxwqojvdv.streamlit.app/ > /dev/null
