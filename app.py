@@ -49,7 +49,6 @@ with st.sidebar:
     if ticker:
         st.session_state.selected_ticker = ticker
 
-    # =========== Quick ranges (Goal 4) ===========
     # two rows so the buttons don't squish (wider labels)
     st.caption("Quick ranges")
     qrow1c1, qrow1c2 = st.columns(2)
@@ -88,7 +87,7 @@ start = st.session_state.start_date
 end = st.session_state.end_date
 ticker = st.session_state.selected_ticker
 
-# run on button click only (keeping this phase simple)
+# run on button click only
 if run_btn:
     try:
         with st.spinner("Fetching data..."):
@@ -182,6 +181,19 @@ if run_btn:
             beats = "Yes" if (stats_mom["profit"] > bh_profit) or (stats_rev["profit"] > bh_profit) else "No"
             c3.metric("Beats Buy & Hold?", beats)
 
+            st.markdown("&nbsp;")
+            comp1, comp2 = st.columns(2)
+            mom_ret = (stats_mom.get("profit", 0.0) / 10_000.0) * 100.0
+            rev_ret = (stats_rev.get("profit", 0.0) / 10_000.0) * 100.0
+
+            better_profit = "Momentum" if stats_mom.get("profit", 0.0) >= stats_rev.get("profit", 0.0) else "Mean Reversion"
+            profit_delta = stats_mom.get("profit", 0.0) - stats_rev.get("profit", 0.0)
+            comp1.metric("Better Profit", better_profit, delta=f"${profit_delta:,.2f}")
+
+            better_return = "Momentum" if mom_ret >= rev_ret else "Mean Reversion"
+            ret_delta = mom_ret - rev_ret  # percentage points difference
+            comp2.metric("Higher Return (%)", better_return, delta=f"{ret_delta:.2f} pp")
+
             # downloads (trade logs)
             st.subheader("Downloads")
             for name, trades in [("Momentum", trades_mom), ("Mean Reversion", trades_rev)]:
@@ -236,5 +248,3 @@ if run_batch:
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
     else:
         st.info("No tickers to run. Add some symbols like: `AAPL, MSFT, GOOG`")
-
-st.caption("Quick tickers, quick ranges, simple metrics, PNG chart downloads, and a tiny batch summary.")
