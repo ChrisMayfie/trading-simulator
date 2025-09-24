@@ -32,45 +32,36 @@ if "end_date" not in st.session_state:
 with st.sidebar:
     st.header("Controls")
 
-    # =========== Quick tickers ===========
+    # Quick tickers
     st.caption("Quick tickers")
     col_qt1, col_qt2, col_qt3 = st.columns(3)
     if col_qt1.button("AAPL"):
-        st.session_state.selected_ticker = "AAPL"
-        st.rerun()
+        st.session_state.selected_ticker = "AAPL"; st.rerun()
     if col_qt2.button("TSLA"):
-        st.session_state.selected_ticker = "TSLA"
-        st.rerun()
+        st.session_state.selected_ticker = "TSLA"; st.rerun()
     if col_qt3.button("SPY"):
-        st.session_state.selected_ticker = "SPY"
-        st.rerun()
+        st.session_state.selected_ticker = "SPY"; st.rerun()
 
     ticker = st.text_input("Ticker", value=st.session_state.selected_ticker).upper().strip()
     if ticker:
         st.session_state.selected_ticker = ticker
 
-    # two rows so the buttons don't squish (wider labels)
+    # Quick ranges
     st.caption("Quick ranges")
     qrow1c1, qrow1c2 = st.columns(2)
     if qrow1c1.button("3M"):
-        st.session_state.start_date = date.today() - timedelta(days=90)
-        st.rerun()
+        st.session_state.start_date = date.today() - timedelta(days=90); st.rerun()
     if qrow1c2.button("YTD"):
-        st.session_state.start_date = date(date.today().year, 1, 1)
-        st.rerun()
+        st.session_state.start_date = date(date.today().year, 1, 1); st.rerun()
     qrow2c1, qrow2c2 = st.columns(2)
     if qrow2c1.button("1Y"):
-        st.session_state.start_date = date.today() - timedelta(days=365)
-        st.rerun()
+        st.session_state.start_date = date.today() - timedelta(days=365); st.rerun()
     if qrow2c2.button("5Y"):
-        st.session_state.start_date = date.today() - timedelta(days=365 * 5)
-        st.rerun()
+        st.session_state.start_date = date.today() - timedelta(days=365 * 5); st.rerun()
 
-    # render the actual inputs with different keys so buttons don’t fight them
+    # date inputs (keys differ from state to avoid widget mutation errors)
     start = st.date_input("Start date", value=st.session_state.start_date, key="start_date_input")
     end = st.date_input("End date", value=st.session_state.end_date, key="end_date_input")
-
-    # keep state in sync with any manual edits
     st.session_state.start_date = start
     st.session_state.end_date = end
 
@@ -82,7 +73,7 @@ with st.sidebar:
     batch_tickers = st.text_input("Tickers", value="AAPL, MSFT, GOOG")
     run_batch = st.button("Run Batch Summary")
 
-# use the state-backed dates for the run
+# state-backed vars
 start = st.session_state.start_date
 end = st.session_state.end_date
 ticker = st.session_state.selected_ticker
@@ -96,7 +87,7 @@ if run_btn:
         if df is None or df.empty:
             st.warning("No data returned. Try a different date range or ticker.")
         else:
-            # run both strategies with the basic simulator
+            # strategies with simple simulator
             trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy)
             trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy)
 
@@ -122,7 +113,6 @@ if run_btn:
                 )
                 st.pyplot(fig, clear_figure=True)
 
-                # PNG download for Momentum chart
                 png_bytes_mom = fig_to_png_bytes(fig)
                 st.download_button(
                     label="Download Momentum chart (PNG)",
@@ -140,7 +130,6 @@ if run_btn:
                 )
                 st.pyplot(fig2, clear_figure=True)
 
-                # PNG download for Mean Reversion chart
                 png_bytes_rev = fig_to_png_bytes(fig2)
                 st.download_button(
                     label="Download Mean Reversion chart (PNG)",
@@ -154,7 +143,7 @@ if run_btn:
                 show_trade_table(ax_table, trades_mom, trades_rev, title=f"{ticker} Trades")
                 st.pyplot(fig_table, clear_figure=True)
 
-            # ---- Minimal metrics (under the charts)
+            # ---- Mini metrics
             st.markdown("---")
             st.subheader("Metrics (quick)")
 
@@ -173,7 +162,7 @@ if run_btn:
                 st.markdown("**Mean Reversion**")
                 basic_metrics(stats_rev)
 
-            # tiny benchmark row
+            # Benchmark tiles
             st.markdown("&nbsp;")
             c1, c2, c3 = st.columns(3)
             c1.metric("Benchmark Profit ($)", f"{bh_profit:,.2f}")
@@ -185,13 +174,11 @@ if run_btn:
             comp1, comp2 = st.columns(2)
             mom_ret = (stats_mom.get("profit", 0.0) / 10_000.0) * 100.0
             rev_ret = (stats_rev.get("profit", 0.0) / 10_000.0) * 100.0
-
             better_profit = "Momentum" if stats_mom.get("profit", 0.0) >= stats_rev.get("profit", 0.0) else "Mean Reversion"
             profit_delta = stats_mom.get("profit", 0.0) - stats_rev.get("profit", 0.0)
             comp1.metric("Better Profit", better_profit, delta=f"${profit_delta:,.2f}")
-
             better_return = "Momentum" if mom_ret >= rev_ret else "Mean Reversion"
-            ret_delta = mom_ret - rev_ret  # percentage points difference
+            ret_delta = mom_ret - rev_ret
             comp2.metric("Higher Return (%)", better_return, delta=f"{ret_delta:.2f} pp")
 
             # downloads (trade logs)
@@ -209,42 +196,70 @@ if run_btn:
         st.error(f"Error: {e}")
         st.exception(e)
 
-# ----- Batch Summary (v1): tiny table of returns, no charts -----
+# ----- Batch Summary (v2): returns + buy&hold + winner + CSV -----
 if run_batch:
     st.markdown("---")
-    st.subheader("Batch Summary (no charts)")
+    st.subheader("Batch Summary (returns + winner)")
 
     def run_one(tk: str):
         tk = tk.strip().upper()
         if not tk:
             return None
+
         dfb = get_data(tk, start_date=str(start), end_date=str(end))
         if dfb is None or dfb.empty:
-            return {"Ticker": tk, "Mom Return (%)": "—", "MR Return (%)": "—", "Best": "No data"}
+            return {
+                "Ticker": tk,
+                "Mom Return (%)": None,
+                "MR Return (%)": None,
+                "Buy&Hold (%)": None,
+                "Winner": "No data",
+            }
 
         t_m, s_m = run_simulation(dfb.copy(), momentum_strategy)
         t_r, s_r = run_simulation(dfb.copy(), mean_reversion_strategy)
 
         mom_ret = (s_m.get("profit", 0.0) / 10_000.0) * 100.0
-        mr_ret = (s_r.get("profit", 0.0) / 10_000.0) * 100.0
-        best_name = "Momentum" if mom_ret >= mr_ret else "MeanRev"
-        best_val = mom_ret if mom_ret >= mr_ret else mr_ret
+        mr_ret  = (s_r.get("profit", 0.0) / 10_000.0) * 100.0
+
+        # buy & hold return %
+        try:
+            start_px = float(dfb["Close"].iloc[0])
+            end_px   = float(dfb["Close"].iloc[-1])
+            bh_ret   = ((end_px / start_px) - 1.0) * 100.0
+        except Exception:
+            bh_ret = None
+
+        # pick a winner by highest return %
+        candidates = {
+            "Momentum": mom_ret if mom_ret is not None else float("-inf"),
+            "MeanRev": mr_ret if mr_ret is not None else float("-inf"),
+            "Buy&Hold": bh_ret if bh_ret is not None else float("-inf"),
+        }
+        winner = max(candidates, key=candidates.get)
 
         return {
             "Ticker": tk,
-            "Mom Return (%)": f"{mom_ret:.2f}",
-            "MR Return (%)": f"{mr_ret:.2f}",
-            "Best": f"{best_name} ({best_val:.2f}%)"
+            "Mom Return (%)": None if mom_ret is None else round(mom_ret, 2),
+            "MR Return (%)":  None if mr_ret  is None else round(mr_ret, 2),
+            "Buy&Hold (%)":   None if bh_ret  is None else round(bh_ret, 2),
+            "Winner": winner,
         }
 
     tickers_list = [t for t in (batch_tickers.split(",") if batch_tickers else [])]
-    rows = []
-    for tk in tickers_list:
-        row = run_one(tk)
-        if row is not None:
-            rows.append(row)
+    rows = [r for tk in tickers_list if (r := run_one(tk)) is not None]
 
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        df_batch = pd.DataFrame(rows)
+        st.dataframe(df_batch, use_container_width=True)
+
+        # CSV download
+        csv_bytes = df_batch.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download batch summary CSV",
+            data=csv_bytes,
+            file_name=f"batch_summary_{str(start)}_{str(end)}.csv",
+            mime="text/csv",
+        )
     else:
         st.info("No tickers to run. Add some symbols like: `AAPL, MSFT, GOOG`")
