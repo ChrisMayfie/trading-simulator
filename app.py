@@ -116,35 +116,55 @@ with st.sidebar:
     # Quick tickers
     st.caption("Quick tickers")
     col_qt1, col_qt2, col_qt3 = st.columns(3)
-    if col_qt1.button("AAPL"):
-        st.session_state.selected_ticker = "AAPL"; st.rerun()
-    if col_qt2.button("TSLA"):
-        st.session_state.selected_ticker = "TSLA"; st.rerun()
-    if col_qt3.button("SPY"):
-        st.session_state.selected_ticker = "SPY"; st.rerun()
+    if col_qt1.button("AAPL"): st.session_state.selected_ticker = "AAPL"; st.rerun()
+    if col_qt2.button("TSLA"): st.session_state.selected_ticker = "TSLA"; st.rerun()
+    if col_qt3.button("SPY"):  st.session_state.selected_ticker = "SPY";  st.rerun()
 
     ticker = st.text_input("Ticker", value=st.session_state.selected_ticker).upper().strip()
     if ticker:
         st.session_state.selected_ticker = ticker
 
-    # Quick ranges
+    # -------- Quick ranges (fixed) --------
     st.caption("Quick ranges")
+
+    def _apply_range(start_date, end_date=None):
+        # if end not given, keep current end
+        end_date = end_date or st.session_state.get("end_date", date.today())
+        # update BOTH the model keys and the widget keys
+        st.session_state.start_date = start_date
+        st.session_state.end_date = end_date
+        st.session_state["start_date_input"] = start_date
+        st.session_state["end_date_input"] = end_date
+        st.rerun()
+
     qrow1c1, qrow1c2 = st.columns(2)
     if qrow1c1.button("3M"):
-        st.session_state.start_date = date.today() - timedelta(days=90); st.rerun()
+        _apply_range(date.today() - timedelta(days=90))
     if qrow1c2.button("YTD"):
-        st.session_state.start_date = date(date.today().year, 1, 1); st.rerun()
+        _apply_range(date(date.today().year, 1, 1))
+
     qrow2c1, qrow2c2 = st.columns(2)
     if qrow2c1.button("1Y"):
-        st.session_state.start_date = date.today() - timedelta(days=365); st.rerun()
+        _apply_range(date.today() - timedelta(days=365))
     if qrow2c2.button("5Y"):
-        st.session_state.start_date = date.today() - timedelta(days=365 * 5); st.rerun()
+        _apply_range(date.today() - timedelta(days=365 * 5))
 
-    # date inputs (keys differ from state to avoid widget mutation errors)
-    start = st.date_input("Start date", value=st.session_state.start_date, key="start_date_input")
-    end = st.date_input("End date", value=st.session_state.end_date, key="end_date_input")
-    st.session_state.start_date = start
-    st.session_state.end_date = end
+    start = st.date_input(
+        "Start date",
+        value=st.session_state.get("start_date", date.today() - timedelta(days=365)),
+        key="start_date_input",
+    )
+    end = st.date_input(
+        "End date",
+        value=st.session_state.get("end_date", date.today()),
+        key="end_date_input",
+    )
+
+    # Only sync back if the user changed the widget
+    if start != st.session_state.start_date:
+        st.session_state.start_date = start
+    if end != st.session_state.end_date:
+        st.session_state.end_date = end
 
     show_ma = st.checkbox("Show moving average line", value=True)
     run_btn = st.button("Run Backtest", type="primary")
