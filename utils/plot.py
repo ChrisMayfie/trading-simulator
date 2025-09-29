@@ -69,54 +69,62 @@ def plot_trades_matplotlib(df, trades, title="Trading Strategy", show_ma=False, 
     ax.legend(fontsize=8, loc="upper left")
     ax.grid(True)
 
-def show_trade_table(ax, df1, df2, title="Trade Table"):
-
-    """
-    Render a simple trade summary table in a matplotlib subplot.
-
-    Parameters:
-        ax (matplotlib.axes): Axes to render the table into.
-        df1 (DataFrame): Trades from strategy 1 (momentum).
-        df2 (DataFrame): Trades from strategy 2 (mean reversion).
-        title (str): Title for the table subplot.
-    """
-
-    ax.axis("off") # Hide axes
-
-    # Tag each strategy's trades
-    df1 = df1.copy().assign(Strategy="Momentum")
-    df2 = df2.copy().assign(Strategy="MeanRev")
-    df_combined = pd.concat([df1, df2]).reset_index()
-
-    # Handle missing PnL column gracefully
-    if "PnL" not in df_combined:
-        df_combined["PnL"] = "-"
-    df_combined["Price"] = df_combined["Price"].round(2)
-    df_combined["PnL"] = pd.to_numeric(df_combined["PnL"], errors="coerce").round(2)
-
-    # Clean up and format date
-    df_combined["Date"] = pd.to_datetime(df_combined["Date"]).dt.strftime("%Y-%m-%d")
-    df_display = df_combined[["Date", "Strategy", "Action", "Price", "PnL"]].head(10)
-
-    # Format table data
-    table_data = [df_display.columns.tolist()] + df_display.values.tolist()
-    table = ax.table(cellText=table_data, loc="center", cellLoc="center")
-    table.scale(1, 1.5)
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    ax.set_title(title, fontsize=10)
-
-    # Highlight best/worst trades using color
-    valid_pnl = df_display["PnL"].apply(lambda x: isinstance(x, (int, float)))
-    if valid_pnl.any():
-        numeric_pnls = df_display.loc[valid_pnl, "PnL"]
-        if not numeric_pnls.empty:
-            max_idx = numeric_pnls.idxmax()
-            min_idx = numeric_pnls.idxmin()
-            for col_idx in range(len(df_display.columns)):
-                table[(max_idx + 1, col_idx)].set_facecolor("#d4f7d4")  # green
-                table[(min_idx + 1, col_idx)].set_facecolor("#f7d4d4")  # red
-
-
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+
+def show_trade_table(ax, trades_momentum: pd.DataFrame, trades_reversion: pd.DataFrame, title: str = "Trades"):
+    """
+    Render a compact comparison table on a given Matplotlib axis.
+    Robust to object dtypes in Price/PnL/Qty and empty inputs.
+    """
+    # Defensive copies
+    tm = trades_momentum.copy() if trades_momentum is not None else pd.DataFrame()
+    tr = trades_reversion.copy() if trades_reversion is not None else pd.DataFrame()
+
+    # Ensure columns exist
+    for df in (tm, tr):
+        for c in ["Action", "Price", "Qty", "PnL"]:
+            if c not in df.columns:
+                df[c] = pd.Series([pd.NA] * len(df), index=df.index)
+
+    # Coerce numeric columns (avoids .round on object dtype)
+    for df in (tm, tr):
+        df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+        df["Qty"]   = pd.to_numeric(df["Qty"],   errors="coerce")
+        df["PnL"]   = pd.to_numeric(df["PnL"],   errors="coerce")
+
+    # Add labels for concatenation
+    tm["_strategy"] = "Momentum"
+    tr["_strategy"] = "Mean Reversion"
+
+    # Combine and format
+    cols = ["_strategy", "Action", "Price", "Qty", "PnL"]
+    df_combined = pd.concat([tm[cols], tr[cols]], axis=0, ignore_index=True)
+
+    # Clean NaNs and format numbers
+    if not df_combined.empty:
+        # Only round after we coerce to numeric
+        df_combined["Price"] = df_combined["Price"].round(2)
+        df_combined["PnL"]   = df_combined["PnL"].round(2)
+        df_combined["Qty"]   = df_combined["Qty"].astype("Int64")  # pretty ints with NaN support
+
+        # Optional: sort with sells last or by date if you include index
+        # df_combined.sort_values(["_strategy", "Action"], inplace=True)
+
+    # Draw table
+    ax.axis("off")
+    ax.set_title(title, fontsize=12, pad=10)
+
+    if df_combined.empty:
+        ax.text(0.5, 0.5, "No trades", ha="center", va="center", fontsize=11)
+        return
+
+    # Render a matplotlib table
+    table = ax.table(
+        cellText=df_combined.values,
+        colLabels=["Strategy", "Action", "Price", "Qty", "PnL"],
+        loc="center"
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.0, 1.2)

@@ -9,7 +9,7 @@ from data.fetch_data import get_data
 from simulation.simulator import run_simulation
 from strategies.momentum import momentum_strategy
 from strategies.mean_reversion import mean_reversion_strategy
-from utils.plot import plot_trades_matplotlib, show_trade_table
+from utils.plot import plot_trades_matplotlib  # (table removed)
 
 st.set_page_config(page_title="Trading Simulator", layout="wide")
 st.title("Trading Simulator — Momentum vs. Mean Reversion")
@@ -20,6 +20,87 @@ def fig_to_png_bytes(fig) -> bytes:
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=200)
     buf.seek(0)
     return buf.read()
+
+# --- robust: always return a 1-D float Series of Close prices ---
+def _close_series(df: pd.DataFrame) -> pd.Series:
+    s = None
+    if isinstance(df, pd.DataFrame):
+        if "Close" in df.columns:
+            s = df["Close"]
+            if isinstance(s, pd.DataFrame):
+                s = s.iloc[:, 0]
+        elif df.shape[1] >= 1:
+            s = df.iloc[:, 0]
+    if s is None:
+        s = pd.Series(getattr(df, "values", df).ravel(), index=getattr(df, "index", None))
+    s = pd.to_numeric(s.squeeze(), errors="coerce")
+    try:
+        s.index = pd.to_datetime(s.index).tz_localize(None)
+    except Exception:
+        try:
+            s.index = pd.to_datetime(s.index).tz_convert(None)
+        except Exception:
+            s.index = pd.to_datetime(s.index, errors="coerce")
+    s.name = "Close"
+    return s
+
+# --- equity curve from trades (long-only, all-in on BUY, flat on SELL) ---
+def equity_curve_from_trades(df_prices: pd.DataFrame, trades: pd.DataFrame, initial_equity: float = 10_000.0) -> pd.Series:
+    if df_prices is None or df_prices.empty:
+        return pd.Series(dtype=float)
+    close = _close_series(df_prices).sort_index()
+
+    tr = trades.copy() if trades is not None else pd.DataFrame(columns=["Action", "Price"])
+    if tr.empty:
+        # no trades -> stay in cash; still return a curve aligned to close
+        return pd.Series([initial_equity] * len(close), index=close.index, name="equity")
+
+    # coerce trade index to datetime & strip tz safely
+    try:
+        tr.index = pd.to_datetime(tr.index, errors="coerce")
+        if getattr(tr.index, "tz", None) is not None:
+            tr.index = tr.index.tz_convert(None)
+    except Exception:
+        try:
+            tr.index = tr.index.tz_localize(None)
+        except Exception:
+            pass
+    tr = tr.sort_index()
+
+    cash = float(initial_equity)
+    shares = 0
+    vals = []
+
+    it = iter(tr.itertuples(index=True, name="T"))
+    cur = next(it, None)
+
+    for dt, px in close.items():
+        while cur is not None and cur.Index == dt:
+            act = str(getattr(cur, "Action", "")).lower()
+            tpx = float(getattr(cur, "Price", px))
+            if act == "buy" and shares == 0:
+                qty = int(cash // tpx)
+                if qty > 0:
+                    cash -= qty * tpx
+                    shares = qty
+            elif act == "sell" and shares > 0:
+                cash += shares * tpx
+                shares = 0
+            cur = next(it, None)
+        vals.append(cash + shares * float(px))
+
+    return pd.Series(vals, index=close.index, name="equity")
+
+# --- buy & hold equity curve ---
+def equity_curve_buy_hold(df_prices: pd.DataFrame, initial_equity: float = 10_000.0) -> pd.Series:
+    if df_prices is None or df_prices.empty:
+        return pd.Series(dtype=float)
+    close = _close_series(df_prices).sort_index()
+    start = float(close.iloc[0])
+    shares = int(initial_equity // start)
+    rem = initial_equity - shares * start
+    eq = rem + shares * close.astype(float)
+    return pd.Series(eq.values, index=close.index, name="buy_hold")
 
 # --- minimal state ---
 if "selected_ticker" not in st.session_state:
@@ -93,15 +174,16 @@ if run_btn:
 
             # --- Simple buy & hold benchmark (metrics-only)
             initial_equity = 10_000.0
-            start_price = float(df["Close"].iloc[0])
-            end_price = float(df["Close"].iloc[-1])
+            close = _close_series(df)
+            start_price = float(close.iloc[0])
+            end_price = float(close.iloc[-1])
             shares_bh = int(initial_equity // start_price)
             rem_cash = initial_equity - shares_bh * start_price
             final_bh = rem_cash + shares_bh * end_price
             bh_profit = final_bh - initial_equity
             bh_return_pct = (final_bh / initial_equity - 1.0) * 100.0
 
-            # ========== Charts (left/middle) + Trade table (right) ==========
+            # ========== TOP ROW: Momentum | Mean Reversion | Equity Curves ==========
             left, middle, right = st.columns(3)
 
             with left:
@@ -113,6 +195,7 @@ if run_btn:
                 )
                 st.pyplot(fig, clear_figure=True)
 
+                # PNG download
                 png_bytes_mom = fig_to_png_bytes(fig)
                 st.download_button(
                     label="Download Momentum chart (PNG)",
@@ -130,6 +213,7 @@ if run_btn:
                 )
                 st.pyplot(fig2, clear_figure=True)
 
+                # PNG download
                 png_bytes_rev = fig_to_png_bytes(fig2)
                 st.download_button(
                     label="Download Mean Reversion chart (PNG)",
@@ -139,16 +223,35 @@ if run_btn:
                 )
 
             with right:
-                fig_table, ax_table = plt.subplots(figsize=(7, 5))
-                show_trade_table(ax_table, trades_mom, trades_rev, title=f"{ticker} Trades")
-                st.pyplot(fig_table, clear_figure=True)
+                # Equity Curves (normalized) as the third top panel
+                st.markdown("**Equity Curves (normalized)**")
+                eq_mom = equity_curve_from_trades(df, trades_mom, initial_equity=initial_equity)
+                eq_rev = equity_curve_from_trades(df, trades_rev, initial_equity=initial_equity)
+                eq_bh  = equity_curve_buy_hold(df, initial_equity=initial_equity)
+
+                def _norm(s: pd.Series) -> pd.Series:
+                    if s is None or s.empty:
+                        return s
+                    base = s.iloc[0] if s.iloc[0] != 0 else 1.0
+                    return s / base
+
+                fig_ec, ax_ec = plt.subplots(figsize=(7, 4))
+                if not eq_mom.empty:
+                    ax_ec.plot(eq_mom.index, _norm(eq_mom), label="Momentum")
+                if not eq_rev.empty:
+                    ax_ec.plot(eq_rev.index, _norm(eq_rev), label="Mean Reversion")
+                if not eq_bh.empty:
+                    ax_ec.plot(eq_bh.index, _norm(eq_bh), label="Buy & Hold")
+                ax_ec.set_xlabel("Date"); ax_ec.set_ylabel("Equity (normalized)")
+                ax_ec.legend(loc="best"); ax_ec.grid(True, linestyle="--", alpha=0.3)
+                st.pyplot(fig_ec, clear_figure=True)
 
             # ---- Mini metrics
             st.markdown("---")
             st.subheader("Metrics (quick)")
 
             def basic_metrics(stats: dict):
-                ret_pct = (stats.get("profit", 0.0) / 10_000.0) * 100.0
+                ret_pct = (stats.get("profit", 0.0) / initial_equity) * 100.0
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Profit ($)", f"{stats.get('profit', 0.0):,.2f}")
                 c2.metric("Trades", f"{stats.get('trades', 0)}")
@@ -170,10 +273,11 @@ if run_btn:
             beats = "Yes" if (stats_mom["profit"] > bh_profit) or (stats_rev["profit"] > bh_profit) else "No"
             c3.metric("Beats Buy & Hold?", beats)
 
+            # Quick comparison row (Profit / Return)
             st.markdown("&nbsp;")
             comp1, comp2 = st.columns(2)
-            mom_ret = (stats_mom.get("profit", 0.0) / 10_000.0) * 100.0
-            rev_ret = (stats_rev.get("profit", 0.0) / 10_000.0) * 100.0
+            mom_ret = (stats_mom.get("profit", 0.0) / initial_equity) * 100.0
+            rev_ret = (stats_rev.get("profit", 0.0) / initial_equity) * 100.0
             better_profit = "Momentum" if stats_mom.get("profit", 0.0) >= stats_rev.get("profit", 0.0) else "Mean Reversion"
             profit_delta = stats_mom.get("profit", 0.0) - stats_rev.get("profit", 0.0)
             comp1.metric("Better Profit", better_profit, delta=f"${profit_delta:,.2f}")
@@ -196,70 +300,41 @@ if run_btn:
         st.error(f"Error: {e}")
         st.exception(e)
 
-# ----- Batch Summary (v2): returns + buy&hold + winner + CSV -----
 if run_batch:
     st.markdown("---")
-    st.subheader("Batch Summary (returns + winner)")
+    st.subheader("Batch Summary (no charts)")
 
     def run_one(tk: str):
         tk = tk.strip().upper()
         if not tk:
             return None
-
         dfb = get_data(tk, start_date=str(start), end_date=str(end))
         if dfb is None or dfb.empty:
-            return {
-                "Ticker": tk,
-                "Mom Return (%)": None,
-                "MR Return (%)": None,
-                "Buy&Hold (%)": None,
-                "Winner": "No data",
-            }
+            return {"Ticker": tk, "Mom Return (%)": "—", "MR Return (%)": "—", "Best": "No data"}
 
         t_m, s_m = run_simulation(dfb.copy(), momentum_strategy)
         t_r, s_r = run_simulation(dfb.copy(), mean_reversion_strategy)
 
         mom_ret = (s_m.get("profit", 0.0) / 10_000.0) * 100.0
-        mr_ret  = (s_r.get("profit", 0.0) / 10_000.0) * 100.0
-
-        # buy & hold return %
-        try:
-            start_px = float(dfb["Close"].iloc[0])
-            end_px   = float(dfb["Close"].iloc[-1])
-            bh_ret   = ((end_px / start_px) - 1.0) * 100.0
-        except Exception:
-            bh_ret = None
-
-        # pick a winner by highest return %
-        candidates = {
-            "Momentum": mom_ret if mom_ret is not None else float("-inf"),
-            "MeanRev": mr_ret if mr_ret is not None else float("-inf"),
-            "Buy&Hold": bh_ret if bh_ret is not None else float("-inf"),
-        }
-        winner = max(candidates, key=candidates.get)
+        mr_ret = (s_r.get("profit", 0.0) / 10_000.0) * 100.0
+        best_name = "Momentum" if mom_ret >= mr_ret else "MeanRev"
+        best_val = mom_ret if mom_ret >= mr_ret else mr_ret
 
         return {
             "Ticker": tk,
-            "Mom Return (%)": None if mom_ret is None else round(mom_ret, 2),
-            "MR Return (%)":  None if mr_ret  is None else round(mr_ret, 2),
-            "Buy&Hold (%)":   None if bh_ret  is None else round(bh_ret, 2),
-            "Winner": winner,
+            "Mom Return (%)": f"{mom_ret:.2f}",
+            "MR Return (%)": f"{mr_ret:.2f}",
+            "Best": f"{best_name} ({best_val:.2f}%)"
         }
 
     tickers_list = [t for t in (batch_tickers.split(",") if batch_tickers else [])]
-    rows = [r for tk in tickers_list if (r := run_one(tk)) is not None]
+    rows = []
+    for tk in tickers_list:
+        r = run_one(tk)
+        if r is not None:
+            rows.append(r)
 
     if rows:
-        df_batch = pd.DataFrame(rows)
-        st.dataframe(df_batch, use_container_width=True)
-
-        # CSV download
-        csv_bytes = df_batch.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download batch summary CSV",
-            data=csv_bytes,
-            file_name=f"batch_summary_{str(start)}_{str(end)}.csv",
-            mime="text/csv",
-        )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
     else:
         st.info("No tickers to run. Add some symbols like: `AAPL, MSFT, GOOG`")
