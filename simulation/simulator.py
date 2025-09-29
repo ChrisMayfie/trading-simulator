@@ -1,13 +1,7 @@
-# simulation/simulator.py
-
 from __future__ import annotations
 import pandas as pd
 import numpy as np
 from typing import Callable, Tuple, Dict, Any, Union
-
-# ---------------------------------------------------------------------
-# Helpers to normalize price series and trades
-# ---------------------------------------------------------------------
 
 def _close_series(df: pd.DataFrame) -> pd.Series:
     """
