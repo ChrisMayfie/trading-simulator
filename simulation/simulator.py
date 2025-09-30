@@ -4,9 +4,6 @@ import numpy as np
 from typing import Callable, Tuple, Dict, Any, Union
 
 def _close_series(df: pd.DataFrame) -> pd.Series:
-    """
-    Return a clean 1-D float Series of Close prices with a datetime index.
-    """
     s = None
     if isinstance(df, pd.DataFrame):
         if "Close" in df.columns:
@@ -22,44 +19,34 @@ def _close_series(df: pd.DataFrame) -> pd.Series:
     s.name = "Close"
     return s
 
-
 def _ensure_trade_columns(trades: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensure trades has Date index + Action, Price, Qty, PnL columns.
-    If Qty/PnL are missing, compute them under a full-position approach:
-      - BUY: invest all cash
-      - SELL: liquidate the position
-    """
     if trades is None or trades.empty:
         return pd.DataFrame(columns=["Action", "Price", "Qty", "PnL"])
 
     t = trades.copy()
-
-    # normalize index to datetime if possible
     if not isinstance(t.index, pd.DatetimeIndex):
         try:
             t.index = pd.to_datetime(t.index)
         except Exception:
             pass
 
-    # map common alternative column names
+    # map common alt names
     if "Action" not in t.columns:
-        for alt in ("action", "Signal", "signal", "Side", "side"):
+        for alt in ("action", "signal", "Side", "side"):
             if alt in t.columns:
                 t["Action"] = t[alt]
                 break
     if "Price" not in t.columns:
-        for alt in ("price", "FillPrice", "fill_price"):
+        for alt in ("price", "fill_price", "FillPrice"):
             if alt in t.columns:
                 t["Price"] = t[alt]
                 break
 
-    # create missing numeric columns
     for c in ("Qty", "PnL"):
         if c not in t.columns:
             t[c] = np.nan
 
-    # compute Qty/PnL if missing (whole-position assumption)
+    # backfill Qty/PnL under whole-position assumption
     cash = 10_000.0
     qty = 0
     last_buy_px = None
@@ -89,17 +76,11 @@ def _ensure_trade_columns(trades: pd.DataFrame) -> pd.DataFrame:
 
     return t
 
-
 def compute_equity_curve(
     df_prices: pd.DataFrame,
     trades: pd.DataFrame,
     initial_equity: float = 10_000.0
 ) -> pd.Series:
-    """
-    Replay trades over the Close price series and return an equity curve Series
-    (cash + market value of open position) indexed by date.
-    Full-position sizing: invest all cash on BUY; liquidate on SELL.
-    """
     close = _close_series(df_prices)
     tr = _ensure_trade_columns(trades).sort_index()
 
@@ -107,12 +88,10 @@ def compute_equity_curve(
     shares = 0
     eq = []
 
-    # iterate trades alongside price dates
     t_iter = iter(tr.itertuples(index=True, name="T"))
     current = next(t_iter, None)
 
     for dt, px in close.items():
-        # apply any trades at this timestamp
         while current is not None and current.Index == dt:
             action = str(getattr(current, "Action", "")).lower()
             price = float(getattr(current, "Price", float(px)))
@@ -130,34 +109,19 @@ def compute_equity_curve(
 
     return pd.Series(eq, index=close.index, name="equity")
 
-
-# ---------------------------------------------------------------------
-# Strategy output normalization
-# ---------------------------------------------------------------------
-
 def _normalize_strategy_output(
     df: pd.DataFrame,
     strategy_fn: Callable[[pd.DataFrame], Any]
 ) -> pd.Series:
-    """
-    Call the strategy and normalize its output to a Series of string actions:
-    values in {'buy', 'sell', 'hold'} aligned to df.index.
-
-    Accepted strategy outputs:
-      - pd.Series of {1, -1, 0} or {'buy','sell','hold'}
-      - pd.DataFrame with 'signal' or 'Action' column (numeric or text)
-      - tuple(..., series_or_df) -> we pick the last element if it looks like signals
-    """
     out = strategy_fn(df)
 
-    # if tuple, try to use the last Series/DataFrame-looking element
+    # if tuple, prefer the last Series/DataFrame-like element
     if isinstance(out, tuple) and len(out) > 0:
         for cand in reversed(out):
             if isinstance(cand, (pd.Series, pd.DataFrame)):
                 out = cand
                 break
 
-    # DataFrame: try a known column
     if isinstance(out, pd.DataFrame):
         if "signal" in out.columns:
             sig = out["signal"]
@@ -172,38 +136,25 @@ def _normalize_strategy_output(
 
     sig = sig.reindex(df.index)
 
-    # Coerce to text actions
+    # numeric -> text
     if pd.api.types.is_numeric_dtype(sig):
-        m = sig.fillna(0).astype(int)
+        m = pd.to_numeric(sig.fillna(0), errors="coerce").astype(int)
         return m.map({1: "buy", -1: "sell"}).fillna("hold")
 
     s = sig.astype(str).str.lower().str.strip()
     return s.where(s.isin(["buy", "sell", "hold"]), "hold")
-
-
-# ---------------------------------------------------------------------
-# Simulation based on normalized signals
-# ---------------------------------------------------------------------
 
 def _simulate_from_signals(
     df: pd.DataFrame,
     signals: pd.Series,
     initial_equity: float = 10_000.0
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """
-    Simple long-only simulator:
-      - On 'buy' when flat: invest all cash at Close
-      - On 'sell' when long: liquidate at Close
-      - Ignore repeated buys while long or sells while flat
-    Returns a (trades_df, stats_dict).
-    """
     px = _close_series(df)
     signals = signals.reindex(px.index).fillna("hold")
 
     cash = float(initial_equity)
     shares = 0
     last_buy_px = None
-
     records = []
 
     for dt, action in signals.items():
@@ -230,11 +181,9 @@ def _simulate_from_signals(
         trades.set_index("Date", inplace=True)
         trades.index = pd.to_datetime(trades.index).tz_localize(None)
 
-    # Profit = sum of PnL on sell rows
     total_profit = float(pd.to_numeric(trades.get("PnL", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
     num_round_trips = int((trades.get("Action", pd.Series(dtype=str)).str.lower() == "sell").sum())
 
-    # Equity curve (cash + MV replay)
     eq_curve = compute_equity_curve(df, trades, initial_equity=initial_equity)
 
     stats: Dict[str, Any] = {
@@ -243,11 +192,9 @@ def _simulate_from_signals(
         "equity_curve": eq_curve,
     }
 
-    # optional extras
     if num_round_trips > 0:
         avg_trade_pnl = total_profit / num_round_trips
         stats["avg_trade_pnl"] = avg_trade_pnl
-
         sells = trades[trades["Action"].str.lower() == "sell"]
         if not sells.empty and "PnL" in sells:
             wins = (sells["PnL"] > 0).sum()
@@ -255,27 +202,12 @@ def _simulate_from_signals(
 
     return _ensure_trade_columns(trades), stats
 
-
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
-
 def run_simulation(
     df: pd.DataFrame,
     strategy_fn: Callable[[pd.DataFrame], Union[pd.Series, pd.DataFrame, Tuple[Any, ...]]],
     initial_equity: float = 10_000.0,
-    **kwargs,  # safely ignore extra args like strategy_name from older callers
+    **kwargs,  # tolerate legacy extras
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """
-    Run a strategy on price data and produce (trades, stats).
-
-    Returns
-    -------
-    trades : pd.DataFrame
-        Index = trade timestamps; columns include Action, Price, Qty, PnL (PnL on sells).
-    stats : dict
-        Contains at least: 'profit', 'trades', and 'equity_curve' (pd.Series).
-    """
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=["Action", "Price", "Qty", "PnL"]), {
             "profit": 0.0, "trades": 0, "equity_curve": pd.Series(dtype=float)
@@ -284,7 +216,6 @@ def run_simulation(
     signals = _normalize_strategy_output(df, strategy_fn)
     trades, stats = _simulate_from_signals(df, signals, initial_equity=initial_equity)
 
-    # safety: ensure trades standardized & equity curve present
     trades = _ensure_trade_columns(trades)
     if "equity_curve" not in stats or not isinstance(stats["equity_curve"], pd.Series):
         try:
