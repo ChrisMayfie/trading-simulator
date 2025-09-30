@@ -268,7 +268,7 @@ if run_btn:
 
             # ---- Mini metrics
             st.markdown("---")
-            st.subheader("Metrics (quick)")
+            st.subheader("Metrics")
 
             def basic_metrics(stats: dict):
                 ret_pct = (stats.get("profit", 0.0) / initial_equity) * 100.0
