@@ -9,7 +9,7 @@ from data.fetch_data import get_data
 from simulation.simulator import run_simulation
 from strategies.momentum import momentum_strategy
 from strategies.mean_reversion import mean_reversion_strategy
-from utils.plot import plot_trades_matplotlib  # (table removed)
+from utils.plot import plot_trades_matplotlib  # (table removed in this goal)
 
 st.set_page_config(page_title="Trading Simulator", layout="wide")
 st.title("Trading Simulator — Momentum vs. Mean Reversion")
@@ -34,6 +34,7 @@ def _close_series(df: pd.DataFrame) -> pd.Series:
     if s is None:
         s = pd.Series(getattr(df, "values", df).ravel(), index=getattr(df, "index", None))
     s = pd.to_numeric(s.squeeze(), errors="coerce")
+    # make index tz-naive if possible (silently ignore if already naive)
     try:
         s.index = pd.to_datetime(s.index).tz_localize(None)
     except Exception:
@@ -124,17 +125,15 @@ with st.sidebar:
     if ticker:
         st.session_state.selected_ticker = ticker
 
-    # -------- Quick ranges (fixed) --------
+    # -------- Quick ranges (fixed to update widgets) --------
     st.caption("Quick ranges")
 
-    def _apply_range(start_date, end_date=None):
-        # if end not given, keep current end
-        end_date = end_date or st.session_state.get("end_date", date.today())
-        # update BOTH the model keys and the widget keys
-        st.session_state.start_date = start_date
-        st.session_state.end_date = end_date
-        st.session_state["start_date_input"] = start_date
-        st.session_state["end_date_input"] = end_date
+    def _apply_range(start_date_val, end_date_val=None):
+        end_date_val = end_date_val or st.session_state.get("end_date", date.today())
+        st.session_state.start_date = start_date_val
+        st.session_state.end_date = end_date_val
+        st.session_state["start_date_input"] = start_date_val
+        st.session_state["end_date_input"] = end_date_val
         st.rerun()
 
     qrow1c1, qrow1c2 = st.columns(2)
@@ -149,6 +148,7 @@ with st.sidebar:
     if qrow2c2.button("5Y"):
         _apply_range(date.today() - timedelta(days=365 * 5))
 
+    # date inputs (keys differ from state to avoid widget mutation errors)
     start = st.date_input(
         "Start date",
         value=st.session_state.get("start_date", date.today() - timedelta(days=365)),
@@ -159,13 +159,35 @@ with st.sidebar:
         value=st.session_state.get("end_date", date.today()),
         key="end_date_input",
     )
-
-    # Only sync back if the user changed the widget
     if start != st.session_state.start_date:
         st.session_state.start_date = start
     if end != st.session_state.end_date:
         st.session_state.end_date = end
 
+    # --- Strategy parameters (NEW) ---
+    st.subheader("Strategy Parameters")
+
+    with st.expander("Momentum", expanded=False):
+        mom_lookback = st.number_input("Lookback (days)", min_value=1, max_value=252, value=20, step=1,
+        help="How many past days to compare. Higher = smoother signal & fewer trades; lower = faster but noisier.")
+        mom_min_gap = st.number_input("Min gap vs ref (fraction)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f",
+        help="Smallest relative gap needed to trigger a trade. Example: 0.05 = 5%. Higher = fewer trades, stronger trends only.")
+        
+
+    with st.expander("Mean Reversion", expanded=False):
+        mr_ma_window = st.number_input("MA window (days)", min_value=2, max_value=252, value=20, step=1,
+        help="Length of the mean used as the anchor. Higher = smoother mean & fewer trades; lower = faster but choppier.")
+        mr_z_entry = st.number_input("Z-score entry threshold", min_value=0.1, max_value=5.0, value=1.0, step=0.1, format="%.1f",
+        help="Enter when price is this many standard-deviations away from the mean. Higher = rarer, more extreme setups.")
+        mr_z_exit  = st.number_input("Z-score exit to flat", min_value=0.05, max_value=3.0, value=0.25, step=0.05, format="%.2f",
+        help="Close when the distance shrinks to this level. Lower = exit sooner; higher = ride the move longer.")
+
+    st.subheader("Portfolio")
+    starting_cash = st.number_input(
+        "Starting cash ($)",
+        min_value=1000, max_value=10_000_000, value=10_000, step=500,
+        help="Initial equity for the backtest. Default is $10,000."
+)
     show_ma = st.checkbox("Show moving average line", value=True)
     run_btn = st.button("Run Backtest", type="primary")
 
@@ -188,12 +210,24 @@ if run_btn:
         if df is None or df.empty:
             st.warning("No data returned. Try a different date range or ticker.")
         else:
-            # strategies with simple simulator
-            trades_mom, stats_mom = run_simulation(df.copy(), momentum_strategy)
-            trades_rev, stats_rev = run_simulation(df.copy(), mean_reversion_strategy)
+            trades_mom, stats_mom = run_simulation(
+                df.copy(),
+                lambda d: momentum_strategy(d, lookback=int(mom_lookback), min_gap=float(mom_min_gap)),
+                initial_equity=float(starting_cash)
+            )
+            trades_rev, stats_rev = run_simulation(
+                df.copy(),
+                lambda d: mean_reversion_strategy(
+                    d,
+                    ma_window=int(mr_ma_window),
+                    z_entry=float(mr_z_entry),
+                    z_exit=float(mr_z_exit),
+                ),
+                initial_equity=float(starting_cash)
+            )
 
-            # --- Simple buy & hold benchmark (metrics-only)
-            initial_equity = 10_000.0
+
+            initial_equity = float(starting_cash)
             close = _close_series(df)
             start_price = float(close.iloc[0])
             end_price = float(close.iloc[-1])
@@ -202,6 +236,7 @@ if run_btn:
             final_bh = rem_cash + shares_bh * end_price
             bh_profit = final_bh - initial_equity
             bh_return_pct = (final_bh / initial_equity - 1.0) * 100.0
+
 
             # ========== TOP ROW: Momentum | Mean Reversion | Equity Curves ==========
             left, middle, right = st.columns(3)
@@ -243,10 +278,12 @@ if run_btn:
                 )
 
             with right:
-                # Equity Curves (normalized) as the third top panel
-                st.markdown("**Equity Curves (normalized)**")
-                eq_mom = equity_curve_from_trades(df, trades_mom, initial_equity=initial_equity)
-                eq_rev = equity_curve_from_trades(df, trades_rev, initial_equity=initial_equity)
+                eq_mom = stats_mom.get("equity_curve")
+                eq_rev = stats_rev.get("equity_curve")
+                if not isinstance(eq_mom, pd.Series):
+                    eq_mom = equity_curve_from_trades(df, trades_mom, initial_equity=initial_equity)
+                if not isinstance(eq_rev, pd.Series):
+                    eq_rev = equity_curve_from_trades(df, trades_rev, initial_equity=initial_equity)
                 eq_bh  = equity_curve_buy_hold(df, initial_equity=initial_equity)
 
                 def _norm(s: pd.Series) -> pd.Series:
@@ -256,11 +293,11 @@ if run_btn:
                     return s / base
 
                 fig_ec, ax_ec = plt.subplots(figsize=(7, 4))
-                if not eq_mom.empty:
+                if isinstance(eq_mom, pd.Series) and not eq_mom.empty:
                     ax_ec.plot(eq_mom.index, _norm(eq_mom), label="Momentum")
-                if not eq_rev.empty:
+                if isinstance(eq_rev, pd.Series) and not eq_rev.empty:
                     ax_ec.plot(eq_rev.index, _norm(eq_rev), label="Mean Reversion")
-                if not eq_bh.empty:
+                if isinstance(eq_bh, pd.Series) and not eq_bh.empty:
                     ax_ec.plot(eq_bh.index, _norm(eq_bh), label="Buy & Hold")
                 ax_ec.set_xlabel("Date"); ax_ec.set_ylabel("Equity (normalized)")
                 ax_ec.legend(loc="best"); ax_ec.grid(True, linestyle="--", alpha=0.3)
@@ -268,7 +305,7 @@ if run_btn:
 
             # ---- Mini metrics
             st.markdown("---")
-            st.subheader("Metrics")
+            st.subheader("Metrics (quick)")
 
             def basic_metrics(stats: dict):
                 ret_pct = (stats.get("profit", 0.0) / initial_equity) * 100.0
@@ -276,6 +313,7 @@ if run_btn:
                 c1.metric("Profit ($)", f"{stats.get('profit', 0.0):,.2f}")
                 c2.metric("Trades", f"{stats.get('trades', 0)}")
                 c3.metric("Return (%)", f"{ret_pct:.2f}")
+
 
             colA, colB = st.columns(2)
             with colA:
@@ -320,6 +358,7 @@ if run_btn:
         st.error(f"Error: {e}")
         st.exception(e)
 
+# ----- Batch Summary (v1): tiny table of returns, no charts -----
 if run_batch:
     st.markdown("---")
     st.subheader("Batch Summary (no charts)")
@@ -332,11 +371,20 @@ if run_batch:
         if dfb is None or dfb.empty:
             return {"Ticker": tk, "Mom Return (%)": "—", "MR Return (%)": "—", "Best": "No data"}
 
-        t_m, s_m = run_simulation(dfb.copy(), momentum_strategy)
-        t_r, s_r = run_simulation(dfb.copy(), mean_reversion_strategy)
+        t_m, s_m = run_simulation(
+            dfb.copy(),
+            lambda d: momentum_strategy(d, lookback=int(20), min_gap=float(0.0)),
+            initial_equity=initial_equity
+        )
+        t_r, s_r = run_simulation(
+            dfb.copy(),
+            lambda d: mean_reversion_strategy(d, ma_window=int(20), z_entry=float(1.0), z_exit=float(0.25)),
+            initial_equity=initial_equity
+        )
 
-        mom_ret = (s_m.get("profit", 0.0) / 10_000.0) * 100.0
-        mr_ret = (s_r.get("profit", 0.0) / 10_000.0) * 100.0
+        mom_ret = (s_m.get("profit", 0.0) / initial_equity) * 100.0
+        mr_ret  = (s_r.get("profit", 0.0) / initial_equity) * 100.0
+
         best_name = "Momentum" if mom_ret >= mr_ret else "MeanRev"
         best_val = mom_ret if mom_ret >= mr_ret else mr_ret
 
