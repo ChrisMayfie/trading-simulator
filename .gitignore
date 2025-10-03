@@ -6,3 +6,5 @@ __pycache__/
 
 # Ignore generated output files
 *.csv
+
+settings.json
