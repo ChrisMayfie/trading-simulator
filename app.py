@@ -22,7 +22,6 @@ def fig_to_png_bytes(fig) -> bytes:
     return buf.read()
 
 def _close_series(df: pd.DataFrame) -> pd.Series:
-    """Return a 1-D float Series of Close prices with tz-naive DateTime index."""
     s = None
     if isinstance(df, pd.DataFrame):
         if "Close" in df.columns:
@@ -44,51 +43,6 @@ def _close_series(df: pd.DataFrame) -> pd.Series:
     s.name = "Close"
     return s
 
-def equity_curve_from_trades(df_prices: pd.DataFrame, trades: pd.DataFrame, initial_equity: float = 10_000.0) -> pd.Series:
-    """Long-only, all-in on BUY, flat on SELL equity curve from trade log."""
-    if df_prices is None or df_prices.empty:
-        return pd.Series(dtype=float)
-    close = _close_series(df_prices).sort_index()
-
-    if trades is None or trades.empty:
-        return pd.Series([initial_equity] * len(close), index=close.index, name="equity")
-
-    tr = trades.copy()
-    try:
-        tr.index = pd.to_datetime(tr.index, errors="coerce")
-        if getattr(tr.index, "tz", None) is not None:
-            tr.index = tr.index.tz_convert(None)
-    except Exception:
-        try:
-            tr.index = tr.index.tz_localize(None)
-        except Exception:
-            pass
-    tr = tr.sort_index()
-
-    cash = float(initial_equity)
-    shares = 0
-    vals = []
-
-    it = iter(tr.itertuples(index=True, name="T"))
-    cur = next(it, None)
-
-    for dt, px in close.items():
-        while cur is not None and cur.Index == dt:
-            act = str(getattr(cur, "Action", "")).lower()
-            tpx = float(getattr(cur, "Price", px))
-            if act == "buy" and shares == 0:
-                qty = int(cash // tpx)
-                if qty > 0:
-                    cash -= qty * tpx
-                    shares = qty
-            elif act == "sell" and shares > 0:
-                cash += shares * tpx
-                shares = 0
-            cur = next(it, None)
-        vals.append(cash + shares * float(px))
-
-    return pd.Series(vals, index=close.index, name="equity")
-
 def equity_curve_buy_hold(df_prices: pd.DataFrame, initial_equity: float = 10_000.0) -> pd.Series:
     if df_prices is None or df_prices.empty:
         return pd.Series(dtype=float)
@@ -104,7 +58,7 @@ def max_drawdown(eq: pd.Series) -> float:
         return 0.0
     cm = eq.cummax()
     dd = (eq / cm) - 1.0
-    return float(dd.min())  # negative (e.g., -0.1234)
+    return float(dd.min())
 
 def sharpe_ratio(eq: pd.Series, periods_per_year: int = 252) -> float:
     if eq is None or len(eq) < 2:
@@ -114,7 +68,6 @@ def sharpe_ratio(eq: pd.Series, periods_per_year: int = 252) -> float:
         return 0.0
     return float((rets.mean() / rets.std()) * (periods_per_year ** 0.5))
 
-# -------- state --------
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 if "start_date" not in st.session_state:
@@ -213,22 +166,49 @@ with st.sidebar:
         min_value=1_000, max_value=10_000_000, value=10_000, step=500,
         help="Initial equity for the backtest. Default is $10,000."
     )
+    st.subheader("Risk Controls")
+    with st.expander("Position & Exits", expanded=False):
+        pos_pct = st.number_input(
+            "Position size (% of cash)",
+            min_value=1, max_value=100, value=100, step=5,
+            help="How much of available cash to invest on each BUY (100 = all-in)."
+        )
+        stop_loss_pct = st.number_input(
+            "Stop-loss (%)",
+            min_value=0.0, max_value=50.0, value=0.0, step=0.5,
+            help="Exit if price falls this % below the entry. Set 0 to disable."
+        )
+        take_profit_pct = st.number_input(
+            "Take-profit (%)",
+            min_value=0.0, max_value=200.0, value=0.0, step=1.0,
+            help="Exit if price rises this % above the entry. Set 0 to disable."
+        )
+
+    with st.expander("Frictions (optional)", expanded=False):
+        commission = st.number_input(
+            "Commission per trade ($)",
+            min_value=0.0, max_value=50.0, value=0.0, step=0.1,
+            help="Fixed fee per BUY/SELL."
+        )
+        slippage_bps = st.number_input(
+            "Slippage (bps)",
+            min_value=0, max_value=200, value=0, step=5,
+            help="Execution slippage in basis points (10 bps = 0.10%)."
+        )
 
     show_ma = st.checkbox("Show moving average line", value=True)
     run_btn = st.button("Run Backtest", type="primary")
 
     st.divider()
-    st.subheader("Batch run - No Charts & CSV Download")
+    st.subheader("Batch run (no charts)")
     batch_tickers = st.text_input("Tickers", value="AAPL, MSFT, GOOG")
     run_batch = st.button("Run Batch Summary")
 
-# share state-backed vars
 start = st.session_state.start_date
 end = st.session_state.end_date
 ticker = st.session_state.selected_ticker
-initial_equity = float(starting_cash)  # <-- available to both single-ticker and batch paths
+initial_equity = float(starting_cash)  # available to both single-ticker and batch paths
 
-# -------- single-ticker run --------
 if run_btn:
     try:
         with st.spinner("Fetching data..."):
@@ -237,11 +217,19 @@ if run_btn:
         if df is None or df.empty:
             st.warning("No data returned. Try a different date range or ticker.")
         else:
-            # strategies
+            common_sim_kwargs = dict(
+                initial_equity=initial_equity,
+                position_size_pct=float(pos_pct) / 100.0,
+                stop_loss_pct=(float(stop_loss_pct) / 100.0) if stop_loss_pct > 0 else None,
+                take_profit_pct=(float(take_profit_pct) / 100.0) if take_profit_pct > 0 else None,
+                commission=float(commission),
+                slippage_bps=int(slippage_bps),
+            )
+
             trades_mom, stats_mom = run_simulation(
                 df.copy(),
                 lambda d: momentum_strategy(d, lookback=int(mom_lookback), min_gap=float(mom_min_gap)),
-                initial_equity=initial_equity
+                **common_sim_kwargs
             )
             trades_rev, stats_rev = run_simulation(
                 df.copy(),
@@ -251,10 +239,9 @@ if run_btn:
                     z_entry=float(mr_z_entry),
                     z_exit=float(mr_z_exit),
                 ),
-                initial_equity=initial_equity
+                **common_sim_kwargs
             )
 
-            # buy & hold benchmark
             close = _close_series(df)
             start_price = float(close.iloc[0])
             end_price = float(close.iloc[-1])
@@ -292,17 +279,17 @@ if run_btn:
                 )
 
             with right:
-                st.markdown("**Normalized Equity Curves**")
+                st.markdown("**Equity Curves (normalized)**")
                 eq_mom = stats_mom.get("equity_curve")
                 eq_rev = stats_rev.get("equity_curve")
                 if not isinstance(eq_mom, pd.Series):
-                    eq_mom = equity_curve_from_trades(df, trades_mom, initial_equity=initial_equity)
+                    eq_mom = stats_mom["equity_curve"] if "equity_curve" in stats_mom else None
                 if not isinstance(eq_rev, pd.Series):
-                    eq_rev = equity_curve_from_trades(df, trades_rev, initial_equity=initial_equity)
+                    eq_rev = stats_rev["equity_curve"] if "equity_curve" in stats_rev else None
                 eq_bh  = equity_curve_buy_hold(df, initial_equity=initial_equity)
 
                 def _norm(s: pd.Series) -> pd.Series:
-                    if s is None or s.empty:
+                    if s is None or len(s) == 0:
                         return s
                     base = s.iloc[0] if s.iloc[0] != 0 else 1.0
                     return s / base
@@ -318,12 +305,12 @@ if run_btn:
                 ax_ec.legend(loc="best"); ax_ec.grid(True, linestyle="--", alpha=0.3)
                 st.pyplot(fig_ec, clear_figure=True)
 
-                # risk metrics for single-ticker view
                 mom_sharpe = sharpe_ratio(eq_mom) if isinstance(eq_mom, pd.Series) else 0.0
                 rev_sharpe = sharpe_ratio(eq_rev) if isinstance(eq_rev, pd.Series) else 0.0
                 mom_mdd = max_drawdown(eq_mom) * 100.0 if isinstance(eq_mom, pd.Series) else 0.0
                 rev_mdd = max_drawdown(eq_rev) * 100.0 if isinstance(eq_rev, pd.Series) else 0.0
 
+            # quick metrics
             st.markdown("---")
             st.subheader("Metrics")
 
@@ -396,17 +383,26 @@ if run_batch:
                 "Best": "No data"
             }
 
+        common_sim_kwargs = dict(
+            initial_equity=initial_equity,
+            position_size_pct=float(pos_pct) / 100.0,
+            stop_loss_pct=(float(stop_loss_pct) / 100.0) if stop_loss_pct > 0 else None,
+            take_profit_pct=(float(take_profit_pct) / 100.0) if take_profit_pct > 0 else None,
+            commission=float(commission),
+            slippage_bps=int(slippage_bps),
+        )
+
         t_m, s_m = run_simulation(
             dfb.copy(),
             lambda d: momentum_strategy(d, lookback=int(mom_lookback), min_gap=float(mom_min_gap)),
-            initial_equity=initial_equity
+            **common_sim_kwargs
         )
         t_r, s_r = run_simulation(
             dfb.copy(),
             lambda d: mean_reversion_strategy(
                 d, ma_window=int(mr_ma_window), z_entry=float(mr_z_entry), z_exit=float(mr_z_exit)
             ),
-            initial_equity=initial_equity
+            **common_sim_kwargs
         )
 
         mom_ret = (s_m.get("profit", 0.0) / initial_equity) * 100.0
