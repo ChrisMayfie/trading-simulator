@@ -26,11 +26,10 @@ def fig_to_png_bytes(fig) -> bytes:
     return buf.read()
 
 def _close_series(df: pd.DataFrame) -> pd.Series:
-    """
-    Extracts 'Close' price series from price DataFrame.
-    Handles irregular cases such as extra columns, wrong types, etc,
-    allows downstream logic to get float series with correct datetime index.
-    """
+    
+    # Extracts 'Close' price series from price DataFrame.
+    # Handles irregular cases such as extra columns, wrong types, etc,
+    # allows downstream logic to get float series with correct datetime index.
     s = None
 
     # Pull the 'Close' column
@@ -64,12 +63,11 @@ def _close_series(df: pd.DataFrame) -> pd.Series:
     return s
 
 def equity_curve_buy_hold(df_prices: pd.DataFrame, initial_equity: float = 10_000.0) -> pd.Series:
-    """
-    Buy and Hold benchmark
-    This buys as many shares as possible at first available price,
-    tracks total account value over time with: shares # price + leftover cash
-    Used to compare strategy performance against just holding
-    """
+
+    # Buy and Hold benchmark
+    # This buys as many shares as possible at first available price,
+    # tracks total account value over time with: shares # price + leftover cash
+    # Used to compare strategy performance against just holding
     if df_prices is None or df_prices.empty:
         return pd.Series(dtype=float)
     
@@ -88,11 +86,10 @@ def equity_curve_buy_hold(df_prices: pd.DataFrame, initial_equity: float = 10_00
     return pd.Series(eq.values, index=close.index, name="buy_hold")
 
 def max_drawdown(eq: pd.Series) -> float:
-    """
-    Calculates max drawdown
-    Worst percentage dropped from a portfolio's peak equity to the lowest point that follows.
-    This is expressed as a negative value
-    """
+
+    # Calculates max drawdown
+    # Worst percentage dropped from a portfolio's peak equity to the lowest point that follows.
+    # This is expressed as a negative value
     if eq is None or eq.empty:
         return 0.0
     
@@ -106,11 +103,10 @@ def max_drawdown(eq: pd.Series) -> float:
     return float(dd.min())  # negative (e.g., -0.1234)
 
 def sharpe_ratio(eq: pd.Series, periods_per_year: int = 252) -> float:
-    """
-    Calculates annual Sharpe ratio for a given equity curve.
-    This measures how much excess return the strategy earns per unit of volatility.
-    Generally, higher is better.
-    """
+    
+    # Calculates annual Sharpe ratio for a given equity curve.
+    # This measures how much excess return the strategy earns per unit of volatility.
+    # Generally, higher is better.
     if eq is None or len(eq) < 2:
         return 0.0
     
@@ -125,11 +121,10 @@ def sharpe_ratio(eq: pd.Series, periods_per_year: int = 252) -> float:
     return float((rets.mean() / rets.std()) * (periods_per_year ** 0.5))
 
 def _normalize_trades_df(trades: pd.DataFrame) -> pd.DataFrame:
-    """
-    Standardizes a trade DataFrame to ensure consistent formatting.
-    Makes sure all trades have 'Date', 'Action', 'Price', and 'PnL' columns
-    and are correctly typed and sorted by date.
-    """
+    
+    # Standardizes a trade DataFrame to ensure consistent formatting.
+    # Makes sure all trades have 'Date', 'Action', 'Price', and 'PnL' columns
+    # and are correctly typed and sorted by date.
     if trades is None or trades.empty:
         return pd.DataFrame(columns=["Date", "Action", "Price", "PnL"])
     
@@ -155,11 +150,9 @@ def _normalize_trades_df(trades: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values("Date").reset_index(drop=True)
 
 def best_trades_desc(trades: pd.DataFrame, n: int = 10) -> pd.DataFrame:
-    """
-    Returns top N best trades by profit from a trade log.
-    Only includes completed 'Sell' actions with PnL values.
-    """
-
+    
+    # Returns top N best trades by profit from a trade log.
+    # Only includes completed 'Sell' actions with PnL values.
     # Standardizes trade data
     df = _normalize_trades_df(trades)
 
@@ -179,11 +172,9 @@ def best_trades_desc(trades: pd.DataFrame, n: int = 10) -> pd.DataFrame:
     return top[["Date", "Price", "PnL"]]
 
 def all_trades_table(trades: pd.DataFrame) -> pd.DataFrame:
-    """ 
-    Returns formatted table of all trades for display or export.
-    Ensures standardized columns and rounds values
-    """
-
+ 
+    # Returns formatted table of all trades for display or export.
+    # Ensures standardized columns and rounds values
     # Copy trade data to avoid changing orriginal
     df = _normalize_trades_df(trades).copy()
 
@@ -194,9 +185,8 @@ def all_trades_table(trades: pd.DataFrame) -> pd.DataFrame:
     # Return trade information in order
     return df[["Date", "Action", "Price", "PnL"]]
 
-"""
-Ensure the app has ticker selected with valid input
-"""
+
+# Ensure the app has ticker selected with valid input
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 if "start_date" not in st.session_state:
@@ -274,10 +264,8 @@ with st.sidebar:
         )
 
     # Strategy Parameters
-    """
-    Controls for both strategies
-    These sliders allow users to change variables for sensitivity
-    """
+    #Controls for both strategies
+    #These sliders allow users to change variables for sensitivity
     with st.expander("Strategy Parameters", expanded=False):
 
         # Looks at short term price direction and trades when prices move away from recent history
@@ -328,11 +316,9 @@ with st.sidebar:
         )
 
     # Risk Controls
-    """
-    Adds optional safety tools
-    Allows users to limit risk
-    All defaults have no stops or targets, generally conservative
-    """
+    # Adds optional safety tools
+    # Allows users to limit risk
+    # All defaults have no stops or targets, generally conservative
     with st.expander("Risk Controls", expanded=False):
 
         # Percentage of cash used per trade
@@ -359,10 +345,9 @@ with st.sidebar:
         )
 
     # Frictions
-    """
-    Models real world trading cost that affects performance
-    Default set to zero for clean initial comparisons
-    """
+    
+    # Models real world trading cost that affects performance
+    # Default set to zero for clean initial comparisons
     with st.expander("Frictions", expanded=False):
 
         # Flat commission fee charged per trade
@@ -439,9 +424,7 @@ with tab_backtest:
                 )
 
                 # Buy & hold benchmark
-                """ 
-                Calculates how much profit would have been generated by buying and holding until the end
-                """
+                # Calculates how much profit would have been generated by buying and holding until the end
                 close = _close_series(df)
                 start_price = float(close.iloc[0])
                 end_price = float(close.iloc[-1])
@@ -460,9 +443,7 @@ with tab_backtest:
                 bh_return_pct = (final_bh / initial_equity - 1.0) * 100.0
 
                 # top row: Momentum , Mean Reversion , Equity Curves
-                """
-                Displays three visual panels side by side
-                """
+                # Displays three visual panels side by side
                 left, middle, right = st.columns(3)
 
                 # Momentum strategy chart
